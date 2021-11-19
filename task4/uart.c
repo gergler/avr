@@ -2,19 +2,23 @@
 #include <util/delay.h>
 #include <avr/interrupt.h>
 #include <stdio.h>
+#include <string.h>
 
 #define FOSC 8000000
 #define BAUD 9600
 #define MYUBRR FOSC/16/BAUD-1
-#define DELAY 500
 
-char data[3] = {0};
-uint8_t flag = 0;
-uint8_t adc_flag = 0;
+char str = 0;
+int flag = 0;
+int udre_flag = 0;
+int timer_flag = 0;
+int timer_counter = 0;
+
 int count = 0;
+char val[3];
 
 void send_ch(char data) {
-	while(!(UCSRA&(1<<UDRE))) {}
+	while((UCSRA&(1<<UDRE)) == 0) {};
 	UDR = data;
 }
 
@@ -24,8 +28,32 @@ void send_str(char *data) {
 		send_ch(data[i]);
 		i++;
 	}
-	send_ch(13);
+	send_ch('\n');
 }
+
+// ISR(USART_UDRE_vect) {
+// 	if ((udre_flag = 1)&(timer_flag = 1)) {
+// 		UDR = str;
+// 		udre_flag = 0;
+// 		timer_flag = 0;
+// 	}
+// }
+// 
+// ISR(TIMER0_OVF_vect) {
+// 	timer_counter ++;
+// 	if(timer_counter >= 10) {
+// 		timer_counter = 0;
+// 		timer_flag = 1;
+// 	}
+// }
+
+// 
+// void send_str(const char *data) {
+// 	for(int i = 0; i < strlen(data); i++) {
+// 		str = data[i];
+// 		udre_flag = 1;
+// 	}
+// }
 
 void light() {
 	send_str("LIGHT");
@@ -58,18 +86,18 @@ ISR(ADC_vect) {
 	char* str = "00000";
 	sprintf(str, "%d", adc_value);
 	send_str(str);
-	ADCSRA &= ~(1<<ADIE);
+	//ADCSRA &= ~(1<<ADIE);
 }
 
 ISR(USART_RXC_vect) {
-	data[count] = UDR;
+	val[count] = UDR;
 	count++;
 	if (count == 3) {
-		if (strncmp("adc", data, 3) == 0)
-			adc();
-		else if (strncmp("dac", data, 3) == 0)
-			dac();
-		else if (strncmp("led", data, 3) == 0)
+// 		if ('a' == str[0])
+// 			adc();
+// 		if ('d' == str[0])
+// 			dac();
+		if (strcmp("led", val))
 			light();
 		else
 			send_str("incorrect command");
@@ -83,7 +111,7 @@ void init_uart(unsigned int ubrr) {
 	
 	// configuration
 	UCSRA = 0;
-	UCSRB = (1<<RXCIE)|(1<<RXEN)|(1<<TXEN)|(1<<UDRIE)|(1<<TXCIE);
+	UCSRB = (1<<RXCIE)|(1<<RXEN)|(1<<TXEN)|(1<<TXCIE)|(1<<UDRIE);
 	UCSRC = (1<<URSEL)|(0<<USBS)|(1<<UCSZ1)|(1<<UCSZ0);
 }
 
@@ -92,9 +120,15 @@ void init_adc() {
 	ADCSRA = (1<<ADEN)|(1<<ADSC)|(1<<ADATE);
 }
 
+void init_timer() {
+	TCCR0 = (1<<CS02)|(1<<CS00);
+	TIMSK = (1<<TOIE0);
+}
+
 void main() {
 	init_uart(MYUBRR);
-	init_adc();
+	//init_adc();
+	init_timer();
 	
 	sei();
 	
@@ -102,6 +136,5 @@ void main() {
 	DDRB = 0x08;
 	PORTB = 0x00;
 	
-	while(1);
+	while(1){};
 }
-
