@@ -3,10 +3,11 @@
 #define MYUBBR F_CPU/16/BAUD - 1
 
 #include <avr/io.h>
-//#include <avr/interrupt.h>
 #include <util/delay.h>
+#include <string.h>
 
-#define slave_addr 0xAE
+#define EEPROM_Write_Addess	0xA0
+#define EEPROM_Read_Addess	0xA1
 
 #define SCL 0
 #define SDA 1
@@ -16,8 +17,9 @@ void init_twi() {
 	DDRC &= ~(1 << SCL) | (1 << SDA);
 	
 	// (F_CPU / F_SCL) - 16) / (2 * pow(4, twps))
-	TWBR = 0x80; // register with speed connection
+	TWBR = 0x64; // register with speed connection 0x80
 	TWSR = 0x00; // prescaler = 1
+	TWCR = (1 << TWEN);
 }
 
 void init_uart(unsigned int ubrr) {
@@ -34,6 +36,34 @@ void send_ch_UART(char c) {
 	UDR = c;
 }
 
+void start_twi() {
+	TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN); // Send START condition
+	while(!(TWCR & (1<<TWINT))); // wait for TWINT Flag set, this indicates that the START condition has been transmitted
+}
+
+void stop_twi() {
+	TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO); // Transmit STOP condition
+	while(TWCR&(1<<TWSTO));	// Wait until stop condition execution
+}
+
+void write_twi(unsigned char data) {
+	TWDR = data;  // data register: Load DATA into TWDR Register
+	TWCR = (1 << TWINT) | (1 << TWEN);  // control register: Clear TWINT bit in TWCR to start transmission of data
+	while(!(TWCR & (1 << TWINT))); // wait for TWINT Flag set, this indicates that the DATA has been transmitted and ACK/NACK has been received
+	if((TWSR & 0xF8) == 0x28) // ACK has been received
+		return 0;
+// 	if((TWSR & 0xF8) == 0x30) // NACK has been received
+// 		return 0;
+	else 
+		return -1;
+}
+
+unsigned char read_twi() {
+	TWCR = (1 << TWINT) | (1 << TWEN);  // control register: Clear TWINT bit in TWCR to start transmission of data
+	while(!(TWCR & (1 << TWINT))); // wait for TWINT Flag set, this indicates that the DATA has been transmitted and ACK/NACK has been received
+	return TWDR;
+}
+
 int send_byte_twi(unsigned char data) {
 	TWDR = data;  // data register: Load DATA into TWDR Register
 	TWCR = (1 << TWINT) | (1 << TWEN);  // control register: Clear TWINT bit in TWCR to start transmission of data
@@ -43,26 +73,36 @@ int send_byte_twi(unsigned char data) {
 	return -1;
 }
 
-
-int set_connection() // set connection with slave
-{
-	while((TWSR & 0xF8) != 0x18) {// SLA+W has been transmitted;	ACK has been received
-		TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN); // Send START condition
-		while(!(TWCR & (1<<TWINT))); // wait for TWINT Flag set, this indicates that the START condition has been transmitted
-		if((TWSR & 0xF8) != 0x08) // Check value of TWI Status Register: A START condition has been transmitted
-			return -1;
-			
-		TWDR = slave_addr; // Load SLA_W into TWDR Register
-		TWCR=(1 << TWINT) | (1 << TWEN); // Clear TWINT bit in TWCR to start transmission of address
-		while(!(TWCR & (1 << TWINT))); // Wait for TWINT Flag set. This indicates that the SLA+W has been transmitted, and ACK/NACK has been received.
-		// SLA+W has been transmitted/Arbitration lost in SLA+W or data bytes/ SLA+R has been transmitted/ SLA+R has been transmitted  and	ACK has been received/NOT ACK has been received
-		if (((TWSR & 0xF8) != 0x18) || ((TWSR & 0xF8) != 0x38) || ((TWSR & 0xF8) != 0x40) || ((TWSR & 0xF8) != 0x48))
-			return -1;
-	}
+int start() { // set connection with slave
+	start_twi();
+	if((TWSR & 0xF8) != 0x08) // Check value of TWI Status Register: A START condition has been transmitted
+		return -1;
+	write_twi(EEPROM_Write_Addess);
+		
+	if ((TWSR & 0xF8) == 0x18) // ack received
+		return 0;
+// 	if ((TWSR & 0xF8) == 0x20) // nack received
+// 		return 0;
+	else 
+		return -1;
 	return 0;
 }
 
-unsigned char write_ch(unsigned char addr, unsigned char data)
+int repeated_start() { 
+	start_twi();
+	if((TWSR & 0xF8) != 0x10) //  Check for repeated start transmitted
+		return -1;
+	write_twi(EEPROM_Write_Addess);
+		
+	if ((TWSR & 0xF8) == 0x40) // ack received
+		return 0;
+// 	if ((TWSR & 0xF8) == 0x48) // nack received
+// 		return 0;
+	else 
+		return -1;
+}
+
+unsigned char write_word_twi(unsigned char addr, unsigned char data)
 {
 	int ch = set_connection();
 	if (ch == -1)
@@ -80,12 +120,11 @@ unsigned char write_ch(unsigned char addr, unsigned char data)
 	if(ch == -1)
 		return '4';
 	
-	TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO); // Transmit STOP condition
-	while(TWCR & (1<<TWSTO));
+	stop_twi();
 	return 0;
 }
 
-unsigned char read_ch(unsigned char addr)
+unsigned char read_word_twi(unsigned char addr)
 {
 	unsigned char data;
 	
@@ -101,27 +140,19 @@ unsigned char read_ch(unsigned char addr)
 	if(ch == -1)
 		return '3';
 
-	TWCR = (1 << TWINT) | (1 << TWSTA) | (1 << TWEN); // Send START condition
-	while(!(TWCR & (1<<TWINT))); // wait for TWINT Flag set, this indicates that the START condition has been transmitted
+	start_twi();
 	if((TWSR & 0xF8) != 0x10) //  A repeated START condition has been transmitted
 		return '4';
 	
-	TWDR = slave_addr + 1; // Load SLA_W into TWDR Register
-	TWCR = (1 << TWINT) | (1 << TWEN); //  Clear TWINT bit in TWCR to start transmission of address
-	while(!(TWCR & (1 << TWINT))); // Wait for TWINT Flag set. This indicates that the SLA+W has been transmitted, and ACK/NACK has been received.
+	write_twi(slave_addr + 1);
 	if((TWSR & 0xF8) != 0x40) // SLA+R has been transmitted; ACK has been received
 		return '5';
 
-
-	TWCR = (1<<TWINT) | (1<<TWEN); // READ
-	while(!(TWCR & (1<<TWINT)));
+	data =read_twi();
 	if((TWSR & 0xF8) != 0x58) // Data byte has been received; NOT ACK has been returned
 		return '6';
-	
-	data = TWDR;
-	TWCR = (1 << TWINT) | (1 << TWEN) | (1 << TWSTO); // Transmit STOP condition
-	while(TWCR & (1<<TWSTO));
-	
+
+	stop_twi();
 	return data;
 }
 
@@ -129,30 +160,40 @@ void write_str(unsigned char data[], unsigned char start_addr) {
 	int i = 0;
 	unsigned char output_write;
 	while(data[i] != '\0') {
-		output_write = write_ch(start_addr + i, data[i]);
+		output_write = write_word_twi(start_addr + i, data[i]);
 		_delay_ms(100);
 		i++;
-		if (output_write != '0') 
+		if (output_write != '0') {
 			send_ch_UART('W');
 			send_ch_UART(output_write);
+		}
 	}
 }
 
 int main() {
+	unsigned char data[5] = "HELLO";
 	init_twi();
 	init_uart(MYUBBR);
-	
-	unsigned char data[5] = "HELLO";
+	start();
+	write_twi(0x00); // Write start memory address for data write
 	unsigned char start_addr = 0;
 	
-	write_str(data, start_addr);
-	_delay_ms(1000);
+	for (int i = 0; i < strlen(data); i++)
+		write_twi(data[i]);
+		
+	stop_twi();
+	_delay_ms(10)
+	
+	start();
+	write_twi(0x00); 
+	repeated_start(EEPROM_Read_Addess); // Repeat start I2C SLA+R 
 
 	while (1) {
 		for (int i = 0; i < 5; i++) {
-			send_ch_UART(read_ch(start_addr + i));
+			send_ch_UART(read_twi(start_addr + i));
 			_delay_ms(500);
 		}
-	}
+	read_NACK();
+	stop_twi();
 }
 
